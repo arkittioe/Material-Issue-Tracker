@@ -12,14 +12,23 @@ from editmiv import DeleteMIVWindow
 from miv_table_viewer import MIVTableViewer
 from line_no_autocomplete import LineNoAutocompleteEntry
 from MTO_Consumption_Window import MTOConsumptionWindow
+from reports_window import ReportsWindow
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 
 class MIVApp(tk.Tk):
     FIXED_PROJECTS = ["P01", "P02", "P03", "P04", "P05", "P06", "P07", "P08", "P12", "P13", "P15"]
+    PROJECT_LOCATIONS = {
+        "P01": ["U106A"],
+        "P02": ["U109A", "U109B"],
+        "P03": ["U107A", ],
+        # 👇 می‌تونی برای پروژه‌های دیگه هم اضافه کنی
+        # "P04": ["..."]
+    }
 
     def __init__(self, registry):
         super().__init__()
-
         self.registry = registry
         self.title("مدیریت MIV")
         self.geometry("1000x700")
@@ -27,9 +36,7 @@ class MIVApp(tk.Tk):
         self.project_var = tk.StringVar()
         self.search_var = tk.StringVar()
         self.create_menu()
-
         self.create_widgets()  # ساخت ویجت‌ها
-
         self.console_output("✅ نرم‌افزار با موفقیت بارگذاری شد.")
 
     def show_table_viewer(self, mode, project, line_no=None, last_n=None, filters=None):
@@ -61,45 +68,43 @@ class MIVApp(tk.Tk):
         self.result_text.see(tk.END)
 
     def create_widgets(self):
-        # --- انتخاب پروژه ---
+        # --- Project Selection Frame ---
         frame_project = ttk.Frame(self)
         frame_project.grid(row=0, column=0, columnspan=2, pady=10, sticky="ew")
 
-        self.columnconfigure(0, weight=2)
+        self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(2, weight=1)  # Give some weight to the dashboard row
 
-        ttk.Label(frame_project, text="🔹 محدوده پروژه:").pack(side=tk.LEFT, padx=5)
-
+        ttk.Label(frame_project, text="Project Scope:").pack(side=tk.LEFT, padx=5)
         self.project_combo = ttk.Combobox(frame_project, textvariable=self.project_var, state="readonly")
         self.project_combo['values'] = self.FIXED_PROJECTS
         self.project_combo.pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame_project, text="Load Project", command=self.load_project).pack(side=tk.LEFT)
 
-        ttk.Button(frame_project, text="بارگذاری پروژه", command=self.load_project).pack(side=tk.LEFT)
-
-        # --- فرم ثبت رکورد ---
-        frame_form = ttk.LabelFrame(self, text="ثبت MIV جدید")
+        # --- MIV Registration Form ---
+        frame_form = ttk.LabelFrame(self, text="Register New MIV")
         frame_form.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-
+        # ... (rest of your form code remains unchanged)
         labels = ["Line No", "MIV Tag", "Location", "Status", "Comment", "Registered For"]
         self.entries = {}
-
         for label in labels:
             row = ttk.Frame(frame_form)
             row.pack(fill=tk.X, pady=2)
             ttk.Label(row, text=label + ": ", width=15).pack(side=tk.LEFT)
-
             if label == "Line No":
                 ent = LineNoAutocompleteEntry(row, self.registry)
             elif label == "Comment":
-                ent = ttk.Entry(row, state="readonly")  # 👈 غیرقابل ویرایش
+                ent = ttk.Entry(row, state="readonly")
+            elif label == "Location":
+                ent = ttk.Combobox(row, state="readonly")
+                self.location_combobox = ent  # ذخیره برای دسترسی در جاهای دیگر
+
             else:
                 ent = ttk.Entry(row)
-
             ent.pack(side=tk.LEFT, fill=tk.X, expand=True)
             self.entries[label] = ent
 
-        # 🔒 Registered By
         row_rb = ttk.Frame(frame_form)
         row_rb.pack(fill=tk.X, pady=2)
         ttk.Label(row_rb, text="Registered By: ", width=15).pack(side=tk.LEFT)
@@ -107,35 +112,112 @@ class MIVApp(tk.Tk):
         lbl_rb = ttk.Label(row_rb, text=system_user, background="white", anchor="w", relief="sunken")
         lbl_rb.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.entries["Registered By"] = lbl_rb
+        ttk.Button(frame_form, text="Register Record", command=self.register_record).pack(pady=10)
 
-        ttk.Button(frame_form, text="ثبت رکورد", command=self.register_record).pack(pady=10)
+        # --- NEW: Mini-Dashboard Frame ---
+        frame_dashboard = ttk.LabelFrame(self, text="Project Dashboard")
+        frame_dashboard.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
+        frame_dashboard.columnconfigure(0, weight=1)  # Make progress bar expandable
 
-        # --- جستجو ---
-        frame_search = ttk.LabelFrame(self, text="جستجو و نمایش")
-        frame_search.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
+        # Project Progress Bar
+        ttk.Label(frame_dashboard, text="Overall Progress:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(frame_dashboard, variable=self.progress_var, maximum=100)
+        self.progress_bar.grid(row=1, column=0, padx=5, pady=2, sticky="ew")
 
+        self.progress_label = ttk.Label(frame_dashboard, text="0%")
+        self.progress_label.grid(row=1, column=1, padx=5, pady=2)
+
+        # Button to open detailed reports
+        ttk.Button(frame_dashboard, text="Open Detailed Reports...", command=self.open_reports_window).grid(row=2,
+                                                                                                            column=0,
+                                                                                                            columnspan=2,
+                                                                                                            pady=10)
+
+        # --- Search and Display Frame ---
+        frame_search = ttk.LabelFrame(self, text="Search and Display")
+        frame_search.grid(row=1, column=1, rowspan=2, padx=10, pady=10, sticky="nsew")  # rowspan=2 to span both rows
+        # ... (rest of your search frame code remains unchanged)
         row_search = ttk.Frame(frame_search)
         row_search.pack(fill=tk.X, pady=5)
-        ttk.Label(row_search, text="Line No برای جستجو: ", width=20).pack(side=tk.LEFT)
+        ttk.Label(row_search, text="Line No for Search: ", width=20).pack(side=tk.LEFT)
         self.search_entry = LineNoAutocompleteEntry(row_search, self.registry)
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row_search, text="جستجو", command=self.search_record).pack(side=tk.LEFT, padx=5)
-        ttk.Button(row_search, text="📋 نمایش MTO", command=self.show_mto_table).pack(side=tk.LEFT, padx=5)
+        ttk.Button(row_search, text="Search", command=self.search_record).pack(side=tk.LEFT, padx=5)
+        ttk.Button(row_search, text="Show MTO", command=self.show_mto_table).pack(side=tk.LEFT, padx=5)
 
         self.result_text = ConsoleText(frame_search, app=self, height=20, width=40)
         self.result_text.pack(padx=5, pady=5, fill=tk.BOTH, expand=True)
 
-        ttk.Button(self, text="خروجی Excel بگیر", command=self.export_excel).grid(row=2, column=0, columnspan=2,
-                                                                                  pady=10)
-
-        # self.complete_var = tk.BooleanVar()
-        # complete_frame = ttk.Frame(frame_form)
-        # complete_frame.pack(fill=tk.X, pady=2)
-        # ttk.Checkbutton(complete_frame, text="آیا این خط MIV کامل شده است؟", variable=self.complete_var).pack(
-        #     side=tk.LEFT)
-
+        # --- Bottom Buttons and Signature ---
+        ttk.Button(self, text="Export to Excel", command=self.export_excel).grid(row=3, column=0, columnspan=2, pady=10)
         lbl_author = ttk.Label(self, text="H.IZADI", font=("Arial", 9), foreground="gray")
-        lbl_author.grid(row=3, column=0, columnspan=2, pady=5, sticky="e")
+        lbl_author.grid(row=4, column=0, columnspan=2, pady=5, sticky="e")
+
+    def create_chart_widgets(self):
+        """ویجت‌های مربوط به نمایش نمودار را ایجاد می‌کند."""
+        frame_charts = ttk.LabelFrame(self, text="📊 نمودار پیشرفت کل پروژه")
+        # این فریم زیر فرم ثبت قرار میگیرد
+        frame_charts.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
+
+        # تنظیمات اولیه برای نمودار matplotlib
+        self.fig = plt.Figure(figsize=(5, 4), dpi=100)
+        self.fig.patch.set_facecolor('white')  # رنگ پس زمینه فیگور
+
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor('white')  # رنگ پس زمینه نمودار
+
+        self.canvas = FigureCanvasTkAgg(self.fig, master=frame_charts)
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas.draw()
+
+    def update_project_chart(self):
+        """نمودار پیشرفت پروژه را بر اساس داده‌های جدید به‌روزرسانی می‌کند."""
+        if not self.registry:
+            return
+
+        progress_data = self.registry.get_project_progress()
+        completed = progress_data["completed"]
+        total = progress_data["total"]
+
+        if total == 0:
+            self.ax.clear()
+            self.ax.text(0.5, 0.5, "اطلاعات MTO برای این پروژه یافت نشد",
+                         ha='center', va='center', fontsize=12, color='red')
+            self.canvas.draw()
+            return
+
+        remaining = total - completed
+        percentage = progress_data["percentage"]
+
+        # داده‌ها برای نمودار دایره‌ای
+        labels = [f'تکمیل شده ({completed})', f'باقی‌مانده ({remaining})']
+        sizes = [completed, remaining]
+        colors = ['#4CAF50', '#FF5722']  # سبز و نارنجی
+        explode = (0.1, 0)  # برجسته کردن قطعه اول
+
+        self.ax.clear()  # پاک کردن نمودار قبلی
+        self.ax.pie(sizes, explode=explode, labels=labels, colors=colors,
+                    autopct='%1.1f%%', shadow=True, startangle=140,
+                    textprops={'fontsize': 10, 'fontname': 'Tahoma'})
+
+        # اضافه کردن عنوان به نمودار
+        self.ax.set_title(f"پروژه {self.registry.project} - پیشرفت: {percentage}%",
+                          fontdict={'fontsize': 12, 'fontweight': 'bold', 'fontname': 'Tahoma'})
+
+        self.ax.axis('equal')  # برای اطمینان از دایره‌ای بودن نمودار
+        self.fig.tight_layout()  # تنظیم فاصله ها
+        self.canvas.draw()
+
+    def open_reports_window(self):
+        """Opens the dedicated window for reports and charts."""
+        if not self.registry:
+            messagebox.showinfo("Info", "Please load a project first to provide context to the reports window.")
+            # Even if no project is loaded, we can open the window.
+            # The reports window will handle the logic.
+
+        reports_win = ReportsWindow(self, self.registry)
+        reports_win.grab_set()  # This makes the new window modal
 
     def show_mto_table(self):
         if not self.registry:
@@ -200,33 +282,48 @@ class MIVApp(tk.Tk):
     def load_project(self):
         project = self.project_var.get()
         if not project:
-            self.console_output("⚠️ لطفاً یک پروژه انتخاب کنید.")
+            self.console_output("Please select a project.")
             return
 
-        # مسیر فایل پروژه
         project_file = f"{project}.csv"
-
         if not os.path.exists(project_file):
-            answer = messagebox.askyesno("پروژه موجود نیست",
-                                         f"فایل پروژه {project_file} یافت نشد. آیا می‌خواهید بسازید؟")
+            # ... (your existing code for creating a new project)
+            answer = messagebox.askyesno("Project Not Found",
+                                         f"Project file {project_file} not found. Create it?")
             if answer:
                 created, msg = self.registry.create_project(project)
-                if created:
-                    self.console_output(f"✅ پروژه {project} با موفقیت ساخته شد.")
-                else:
-                    self.console_output(f"❌ خطا در ساخت پروژه {project}: {msg}")
+                self.console_output(msg)
             else:
-                self.console_output(f"⚠️ پروژه {project} بارگذاری نشد.")
+                self.console_output(f"Project {project} was not loaded.")
                 return
 
-        # اگر اینجا هستیم یعنی پروژه وجود داره (یا ساخته شده)
         self.registry = MIVRegistry(project)
-        # برو سراغ LineNoAutocompleteEntry و اگر وجود داشت، ریستش کن
         line_entry = self.entries.get("Line No")
         if isinstance(line_entry, LineNoAutocompleteEntry):
             line_entry.registry = self.registry
 
-        self.console_output(f"✅ پروژه {project} بارگذاری شد.")
+        self.console_output(f"Project {project} loaded successfully.")
+
+        # ----> This is the new part to update the dashboard <----
+        self.update_dashboard()
+        # به‌روزرسانی مقادیر مجاز Location
+        locations = self.PROJECT_LOCATIONS.get(project, [])
+        if hasattr(self, "location_combobox"):
+            self.location_combobox['values'] = locations
+            self.location_combobox.set("")  # مقدار پیش‌فرض را خالی کن
+
+    def update_dashboard(self):
+        """Refreshes the mini-dashboard with current project progress."""
+        if not self.registry or not self.registry.current_project:
+            self.progress_var.set(0)
+            self.progress_label.config(text="0%")
+            return
+
+        progress_data = self.registry.get_project_progress()
+        percentage = progress_data.get("percentage", 0)
+
+        self.progress_var.set(percentage)
+        self.progress_label.config(text=f"{percentage}%")
 
     def register_record(self):
         if not self.registry:
@@ -444,11 +541,30 @@ class MIVApp(tk.Tk):
                 self.console_output(f"❌ خطا در خروجی گرفتن:\n{e}")
 
     def create_menu(self):
+        """Creates the main application menu."""
         menubar = tk.Menu(self)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        # The command to open the new window is linked here
+        file_menu.add_command(label="Detailed Reports & Charts...", command=self.open_reports_window)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.quit)
+        menubar.add_cascade(label="File", menu=file_menu)
+
         help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="درباره", command=self.show_about)
+        help_menu.add_command(label="About", command=self.show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
+
         self.config(menu=menubar)
+
+    def open_reports_window(self):
+        """Opens the dedicated window for detailed reports."""
+        if not self.registry or not self.registry.current_project:
+            messagebox.showinfo("Info", "Please load a project first.")
+            return
+
+        reports_win = ReportsWindow(self, self.registry)
+        reports_win.grab_set()
 
     def show_about(self):
         messagebox.showinfo("درباره", "نرم‌افزار مدیریت MIV\nساخته شده توسط H.IZADI")

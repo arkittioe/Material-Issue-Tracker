@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 class MTOConsumptionWindow(tk.Toplevel):
+
     def __init__(self, master, registry, line_no, project, callback):
         super().__init__(master)
         self.registry = registry
@@ -52,35 +53,37 @@ class MTOConsumptionWindow(tk.Toplevel):
         self.use_all_vars = {}
 
         for idx, row in self.mto_items.iterrows():
-            itemcode = str(row.get("Itemcode", "")).strip()  # 👈 این خط اصلاح‌شده
-            desc = row.get("Description", "")
-            unit = row.get("UNIT", "")
+            itemcode = str(row.get("Itemcode", "")).strip()
+            desc = str(row.get("Description", "")).strip()
+            unit = str(row.get("UNIT", "")).strip()
+
+            key = self.get_key(row)
 
             type_value = str(row.get("Type", "")).strip().lower().replace(" ", "")
-            if "pipe" in type_value:
-                total = row.get("LENGTH(M)", 0)
-            else:
-                total = row.get("QUANTITY", 0)
+            try:
+                if "pipe" in type_value:
+                    total_qty = float(row.get("LENGTH(M)", 0) or 0)
+                else:
+                    total_qty = float(row.get("QUANTITY", 0) or 0)
+            except (ValueError, TypeError):
+                total_qty = 0.0
 
-            total_qty = float(total)
-            used = self.registry.get_used_qty(self.project, self.line_no, itemcode)
+            used = self.registry.get_used_qty(self.project, self.line_no, itemcode, desc)
+
             remaining = max(0, total_qty - used)
 
             entry_var = tk.StringVar()
-            self.entries[itemcode] = (entry_var, remaining, unit, desc)  # 👈 این خط هم دیگر خطا نخواهد داد
+            self.entries[key] = (entry_var, remaining, unit, desc)
 
-            # مقدار ستون Use All
-            if remaining == 0:
-                use_all_display = "✔️"  # آیتم قبلاً کاملاً مصرف شده
-            else:
-                use_all_display = ""  # هنوز می‌تونه مصرف بشه
+            use_all_display = "✔️" if remaining == 0 else ""
 
-            self.tree.insert("", "end", iid=itemcode,
-                             values=(itemcode, desc, unit, total_qty, used, remaining, "", use_all_display))
+            self.tree.insert(
+                "", "end", iid=key,
+                values=(itemcode, desc, unit, total_qty, used, remaining, "", use_all_display)
+            )
 
             var = tk.BooleanVar()
-            self.use_all_vars[itemcode] = var
-
+            self.use_all_vars[key] = var
 
         self.tree.bind("<Double-1>", self.on_double_click_entry)
         self.tree.bind("<Button-1>", self.on_tree_click)
@@ -94,23 +97,34 @@ class MTOConsumptionWindow(tk.Toplevel):
         summary_parts = []
         updates = []
 
-        for itemcode, (entry, remaining, unit, desc) in self.entries.items():
+        for key, (entry, remaining, unit, desc) in self.entries.items():
             val = entry.get().strip()
             if not val:
                 continue
+
             try:
                 qty = float(val)
                 if qty <= 0 or qty > remaining:
                     raise ValueError()
             except ValueError:
-                messagebox.showerror("خطا", f"مقدار نامعتبر برای {itemcode}. باید بین 0 و {remaining} باشد.")
+                messagebox.showerror("خطا", f"مقدار نامعتبر برای {key}. باید بین 0 و {remaining} باشد.")
                 return
 
-            updates.append((itemcode, qty, unit, desc))
+            # تشخیص اینکه آیا key مربوط به Itemcode هست یا Description
+            use_desc = not key or key.lower() == "nan" or key == desc
+
+            updates.append((
+                "" if use_desc else key,  # اگر باید از Description استفاده بشه، Itemcode خالی می‌گذاریم
+                qty,
+                unit,
+                desc
+            ))
+
+            # ساخت خلاصه مصرف
             if unit.lower() in ['m', 'meter', 'mtr']:
-                summary_parts.append(f"{qty}m {itemcode}")
+                summary_parts.append(f"{qty}m {desc if use_desc else key}")
             else:
-                summary_parts.append(f"{int(qty)}x{itemcode}")
+                summary_parts.append(f"{int(qty)}x{desc if use_desc else key}")
 
         if not updates:
             messagebox.showwarning("هشدار", "هیچ آیتمی انتخاب نشده است.")
@@ -119,12 +133,67 @@ class MTOConsumptionWindow(tk.Toplevel):
         # ذخیره در فایل MTO_PROGRESS
         self.registry.update_progress_file(self.project, self.line_no, updates)
 
-        # ساخت خلاصه
+        # ساخت خلاصه و ارسال به کال‌بک
         summary = ", ".join(summary_parts)
-        self.callback(summary)  # ارسال به فرم ثبت MIV
+        self.callback(summary)
         self.destroy()
 
     def on_double_click_entry(self, event):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        iid = selected[0]
+
+        # گرفتن آیتم‌کد و توضیح برای عنوان پنجره
+        values = self.tree.item(iid)["values"]
+        itemcode = values[0] if values else ""
+        desc = values[1] if len(values) > 1 else ""
+
+        title_text = f"مقدار مصرف برای {itemcode if itemcode.strip() else desc}"
+
+        entry_popup = tk.Toplevel(self)
+        entry_popup.title(title_text)
+        entry_popup.geometry("300x120")
+        entry_popup.grab_set()
+
+        tk.Label(entry_popup, text="مقدار مصرف:", font=("Tahoma", 11)).pack(pady=10)
+        entry = ttk.Entry(entry_popup, font=("Tahoma", 11))
+        entry.pack()
+        entry.focus()
+
+        # اگر مقدار قبلی وجود داشت در ورودی قرار بده
+        prev_val = self.entries.get(iid, (None,))[0]
+        if prev_val:
+            entry.insert(0, prev_val.get())
+
+        def confirm():
+            qty = entry.get().strip()
+
+            # اعتبارسنجی ساده مقدار وارد شده
+            try:
+                val = float(qty)
+                if val < 0:
+                    raise ValueError
+            except:
+                messagebox.showerror("خطا", "مقدار وارد شده باید عدد مثبت باشد.")
+                return
+
+            # بروزرسانی ستون Consume در جدول و مقدار ورودی در self.entries
+            self.tree.set(iid, column="Consume", value=qty)
+            self.entries[iid][0].set(qty)
+
+            # به‌روزرسانی ستون Use All بر اساس مقدار وارد شده و باقی‌مانده
+            remaining = self.entries[iid][1]
+            if val >= remaining:
+                self.tree.set(iid, "Use All", "✔️")
+            else:
+                self.tree.set(iid, "Use All", "")
+
+            entry_popup.destroy()
+
+        tk.Button(entry_popup, text="تایید", command=confirm).pack(pady=10)
+
+        print(self.entries.keys())
         selected = self.tree.selection()
         if not selected:
             return
@@ -142,9 +211,12 @@ class MTOConsumptionWindow(tk.Toplevel):
         entry.focus()
 
         def confirm():
+
             qty = entry.get().strip()
             self.tree.set(iid, column="Consume", value=qty)
-            self.entries[itemcode][0].set(qty)
+            key = iid  # چون iid همان کلیدی است که در self.entries استفاده شده
+            self.entries[key][0].set(qty)
+
             entry_popup.destroy()
 
         tk.Button(entry_popup, text="تایید", command=confirm).pack(pady=10)
@@ -154,6 +226,9 @@ class MTOConsumptionWindow(tk.Toplevel):
         if self.use_all_vars[itemcode].get():
             var.set(str(remaining))
             self.tree.set(itemcode, column="Consume", value=str(remaining))
+            print(
+                f"[DEBUG] itemcode: {itemcode}, remaining: {remaining}, checkbox: {self.use_all_vars[itemcode].get()}")
+
         else:
             var.set("")
             self.tree.set(itemcode, column="Consume", value="")
@@ -170,14 +245,22 @@ class MTOConsumptionWindow(tk.Toplevel):
         # نام ستون‌ها باید با ترتیب ستون‌ها تطابق داشته باشه
         if self.tree["columns"][col_index] == "Use All":
             current_val = self.tree.set(row_id, "Use All")
+
             if current_val == "✔️":
+                # حذف انتخاب Use All
                 self.tree.set(row_id, "Use All", "")
                 self.tree.set(row_id, "Consume", "")
                 self.entries[row_id][0].set("")
             else:
+                # انتخاب Use All و مقداردهی کامل به Consume
                 remaining = self.entries[row_id][1]
                 self.tree.set(row_id, "Use All", "✔️")
                 self.tree.set(row_id, "Consume", str(remaining))
                 self.entries[row_id][0].set(str(remaining))
 
+    def get_key(self, row):
+        itemcode = str(row.get("Itemcode", "")).strip()
+        if not itemcode or itemcode.lower() == "nan":
+            return str(row.get("Description", "")).strip()
+        return itemcode
 
