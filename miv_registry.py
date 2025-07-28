@@ -46,7 +46,6 @@ class MIVRegistry:
             return ""
         return str(value).strip().upper()
 
-
     def ensure_csv_headers(self):
         if os.path.exists(self.csv_file):
             df = pd.read_csv(self.csv_file)

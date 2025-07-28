@@ -31,13 +31,14 @@ class MIVApp(tk.Tk):
         super().__init__()
         self.registry = registry
         self.title("مدیریت MIV")
-        self.geometry("1000x700")
+        self.geometry("1000x800")
         self.configure(bg="white")
         self.project_var = tk.StringVar()
         self.search_var = tk.StringVar()
         self.create_menu()
         self.create_widgets()  # ساخت ویجت‌ها
         self.console_output("✅ نرم‌افزار با موفقیت بارگذاری شد.")
+        self.selected_line_no = None
 
     def show_table_viewer(self, mode, project, line_no=None, last_n=None, filters=None):
         """
@@ -94,6 +95,8 @@ class MIVApp(tk.Tk):
             ttk.Label(row, text=label + ": ", width=15).pack(side=tk.LEFT)
             if label == "Line No":
                 ent = LineNoAutocompleteEntry(row, self.registry)
+                self.line_no_entry = ent  # ✅ ذخیره برای دسترسی بعدی
+
             elif label == "Comment":
                 ent = ttk.Entry(row, state="readonly")
             elif label == "Location":
@@ -105,6 +108,9 @@ class MIVApp(tk.Tk):
             ent.pack(side=tk.LEFT, fill=tk.X, expand=True)
             self.entries[label] = ent
 
+        # 🟡 وقتی کاربر Line No رو پر می‌کنه و از فیلد خارج میشه، نمودار به‌روز بشه
+        self.line_no_entry.bind("<FocusOut>", self.on_line_no_entered)
+
         row_rb = ttk.Frame(frame_form)
         row_rb.pack(fill=tk.X, pady=2)
         ttk.Label(row_rb, text="Registered By: ", width=15).pack(side=tk.LEFT)
@@ -114,25 +120,28 @@ class MIVApp(tk.Tk):
         self.entries["Registered By"] = lbl_rb
         ttk.Button(frame_form, text="Register Record", command=self.register_record).pack(pady=10)
 
-        # --- NEW: Mini-Dashboard Frame ---
+        # --- Mini-Dashboard Frame ---
         frame_dashboard = ttk.LabelFrame(self, text="Project Dashboard")
         frame_dashboard.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
-        frame_dashboard.columnconfigure(0, weight=1)  # Make progress bar expandable
+        frame_dashboard.columnconfigure(0, weight=1)
+        frame_dashboard.columnconfigure(1, weight=1)
+        # ایجاد نمودار دایره‌ای در بالای داشبورد
+        self.dashboard_fig = plt.Figure(figsize=(2.5, 2.5), dpi=100)
+        self.dashboard_ax = self.dashboard_fig.add_subplot(111)
+        self.dashboard_canvas = FigureCanvasTkAgg(self.dashboard_fig, master=frame_dashboard)
+        self.dashboard_canvas.get_tk_widget().grid(row=0, column=0, columnspan=2, pady=5)
 
         # Project Progress Bar
-        ttk.Label(frame_dashboard, text="Overall Progress:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        ttk.Label(frame_dashboard, text="Overall Progress:").grid(row=1, column=0, padx=5, pady=(0, 2), sticky="w")
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(frame_dashboard, variable=self.progress_var, maximum=100)
-        self.progress_bar.grid(row=1, column=0, padx=5, pady=2, sticky="ew")
-
+        self.progress_bar.grid(row=2, column=0, padx=5, pady=2, sticky="ew")
         self.progress_label = ttk.Label(frame_dashboard, text="0%")
-        self.progress_label.grid(row=1, column=1, padx=5, pady=2)
+        self.progress_label.grid(row=2, column=1, padx=5, pady=2)
 
         # Button to open detailed reports
-        ttk.Button(frame_dashboard, text="Open Detailed Reports...", command=self.open_reports_window).grid(row=2,
-                                                                                                            column=0,
-                                                                                                            columnspan=2,
-                                                                                                            pady=10)
+        ttk.Button(frame_dashboard, text="Open Detailed Reports...", command=self.open_reports_window) \
+            .grid(row=3, column=0, columnspan=2, pady=10, sticky="s")
 
         # --- Search and Display Frame ---
         frame_search = ttk.LabelFrame(self, text="Search and Display")
@@ -312,18 +321,80 @@ class MIVApp(tk.Tk):
             self.location_combobox['values'] = locations
             self.location_combobox.set("")  # مقدار پیش‌فرض را خالی کن
 
+    def on_line_no_entered(self, event=None):
+        """وقتی Line No پر شد، نمودار مربوط به اون خط نمایش داده میشه"""
+        if not self.registry:
+            return
+
+        line_no = self.line_no_entry.get().strip()
+        if not line_no:
+            return
+
+        self.selected_line_no = line_no  # ✅ ذخیره شماره خط انتخاب‌شده
+        self.update_dashboard()  # 🔁 به‌روزرسانی نمودار داشبورد
+
     def update_dashboard(self):
-        """Refreshes the mini-dashboard with current project progress."""
+        """
+        Refreshes the project dashboard: includes progress bar and per-line pie chart
+        """
         if not self.registry or not self.registry.current_project:
             self.progress_var.set(0)
             self.progress_label.config(text="0%")
+
+            if hasattr(self, "dashboard_ax"):
+                self.dashboard_ax.clear()
+                self.dashboard_ax.text(0.5, 0.5, "No project loaded", ha='center', va='center', fontsize=10)
+                self.dashboard_canvas.draw()
             return
 
-        progress_data = self.registry.get_project_progress()
+        # اگر خطی انتخاب نشده
+        if not self.selected_line_no:
+            self.progress_var.set(0)
+            self.progress_label.config(text="0%")
+
+            if hasattr(self, "dashboard_ax"):
+                self.dashboard_ax.clear()
+                self.dashboard_ax.text(0.5, 0.5, "No line selected", ha='center', va='center', fontsize=10)
+                self.dashboard_canvas.draw()
+            return
+
+        # گرفتن پیشرفت خط
+        progress_data = self.registry.get_line_progress(self.selected_line_no)
+        total = progress_data.get("total_qty", 0)
+        used = progress_data.get("used_qty", 0)
         percentage = progress_data.get("percentage", 0)
+        remaining = total - used
 
         self.progress_var.set(percentage)
-        self.progress_label.config(text=f"{percentage}%")
+        self.progress_label.config(text=f"{percentage:.1f}%")
+
+        if not hasattr(self, "dashboard_ax"):
+            return
+
+        self.dashboard_ax.clear()
+
+        if total == 0:
+            self.dashboard_ax.text(0.5, 0.5, "No data for this line", ha='center', va='center', fontsize=10)
+        else:
+            labels = [f"Used ({used})", f"Remaining ({remaining})"]
+            sizes = [used, remaining]
+            colors = ['#4CAF50', '#FF9800']
+            explode = (0.1, 0)
+
+            self.dashboard_ax.pie(
+                sizes,
+                explode=explode,
+                labels=labels,
+                colors=colors,
+                autopct='%1.1f%%',
+                shadow=True,
+                startangle=90,
+                textprops={'fontsize': 8, 'fontname': 'Tahoma'}
+            )
+            self.dashboard_ax.axis('equal')
+
+        self.dashboard_fig.tight_layout()
+        self.dashboard_canvas.draw()
 
     def register_record(self):
         if not self.registry:
