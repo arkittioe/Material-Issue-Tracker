@@ -15,6 +15,7 @@ from MTO_Consumption_Window import MTOConsumptionWindow
 from reports_window import ReportsWindow
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import webbrowser
 
 
 class MIVApp(tk.Tk):
@@ -637,9 +638,28 @@ class MIVApp(tk.Tk):
         reports_win = ReportsWindow(self, self.registry)
         reports_win.grab_set()
 
-    def show_about(self):
-        messagebox.showinfo("درباره", "نرم‌افزار مدیریت MIV\nساخته شده توسط H.IZADI")
+    def show_about(self, event=None):  # <-- اینجا event رو اضافه کن
+        import tkinter as tk
+        import webbrowser
 
+        about_win = tk.Toplevel()
+        about_win.title("About")
+        about_win.geometry("300x200")
+
+        info_label = tk.Label(about_win, text="Material-Issue-Tracker Software\nCreated by H.IZADI", font=("Arial", 12))
+        info_label.pack(pady=10)
+
+        def open_github(event):
+            webbrowser.open_new("https://github.com/arkittioe")
+
+        github_link = tk.Label(about_win, text="GitHub: https://github.com/arkittioe/Material-Issue-Tracker", fg="blue", cursor="hand2",
+                               font=("Arial", 10, "underline"))
+        github_link.pack()
+        github_link.bind("<Button-1>", open_github)
+
+
+        close_btn = tk.Button(about_win, text="Close", command=about_win.destroy)
+        close_btn.pack(pady=10)
 
 if __name__ == "__main__":
     from miv_registry import MIVRegistry
