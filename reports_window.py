@@ -11,7 +11,7 @@ class ReportsWindow(tk.Toplevel):
         super().__init__(master)
         self.registry = registry
         self.title("Reports and Charts")
-        self.geometry("800x600")
+        self.geometry("1000x800")
         self.configure(bg="white")
         self.current_chart_type = None  # To track which chart is currently displayed
         self.create_widgets()
@@ -64,6 +64,7 @@ class ReportsWindow(tk.Toplevel):
             "Project Progress (Bar)",
             "Line Progress (Horizontal Bar)",
             "Line Material Breakdown (Bar)",
+            "Line Material progress",
         ]
         self.report_type_combo.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
         self.report_type_combo.bind("<<ComboboxSelected>>", self.on_report_type_selected)
@@ -136,13 +137,13 @@ class ReportsWindow(tk.Toplevel):
 
         # Basic validation before calling specific report functions
         if not project_name:
-            messagebox.showwarning("Warning", "لطفاً یک پروژه انتخاب کنید.")
-            self.display_initial_message("لطفاً یک پروژه را برای تولید گزارش انتخاب کنید.")
+            messagebox.showwarning("Warning", "Please select a project.")
+            self.display_initial_message("Please select a project to generate the report.")
             return
 
         if "Line" in selected_type and not line_no:
-            messagebox.showwarning("Warning", "لطفاً شماره خط را برای گزارش‌های مربوط به خط وارد کنید.")
-            self.display_initial_message("لطفاً شماره خط را برای تولید گزارش خط وارد کنید.")
+            messagebox.showwarning("Warning", "Please enter a line number for line-related reports.")
+            self.display_initial_message("Please enter a line number to generate the line report.")
             return
 
         # Map selected type to appropriate function
@@ -152,16 +153,18 @@ class ReportsWindow(tk.Toplevel):
             self.show_project_progress_bar()
         elif selected_type == "Line Progress (Horizontal Bar)":
             self.show_line_progress_horizontal_bar()
+        elif selected_type == "Line Material progress":
+            self.show_line_material_progress()
         elif selected_type == "Line Material Breakdown (Bar)":
             self.show_line_material_breakdown()
         else:
-            messagebox.showerror("Error", "نوع گزارش نامعتبر انتخاب شده است.")
-            self.display_initial_message("خطا: نوع گزارش نامعتبر انتخاب شده است.")
+            messagebox.showerror("Error", "Invalid report type selected.")
+            self.display_initial_message("Error: Invalid report type selected.")
 
     def show_project_progress_pie(self):
         project_name = self.project_var.get().strip()
         self.ax.clear()
-        self.ax.set_xticks([])  # Ensure no ticks are shown on pie charts
+        self.ax.set_xticks([])
         self.ax.set_yticks([])
 
         try:
@@ -173,12 +176,13 @@ class ReportsWindow(tk.Toplevel):
             percentage = progress_data.get("percentage", 0)
 
             if total_weight <= 0:
-                self.display_initial_message(f"اطلاعات MTO برای پروژه '{project_name}' یافت نشد یا وزن کل صفر است.")
+                self.display_initial_message(
+                    f"No MTO data found for project '{project_name}', or total weight is zero.")
             else:
                 remaining = max(0, total_weight - done_weight)
                 sizes = [done_weight, remaining]
-                labels = [f"انجام شده ({round(percentage, 2)}%)", f"باقی‌مانده ({round(100 - percentage, 2)}%)"]
-                colors = ['#4CAF50', '#BDBDBD']
+                labels = [f"Completed ({round(percentage, 2)}%)", f"Remaining ({round(100 - percentage, 2)}%)"]
+                colors = ['#4CAF50', '#BDBDBD']  # Green and Gray
 
                 wedges, texts, autotexts = self.ax.pie(
                     sizes,
@@ -190,88 +194,137 @@ class ReportsWindow(tk.Toplevel):
                     pctdistance=0.85
                 )
 
+                # Style the percentage texts inside the pie
                 for autotext in autotexts:
                     autotext.set_color('white')
                     autotext.set_fontsize(10)
                     autotext.set_weight('bold')
 
-                self.ax.set_title(f"پیشرفت کلی پروژه: {project_name}", fontsize=14, weight='bold', pad=20)
-                self.ax.axis('equal')
+                # Draw a white circle at the center to create a donut chart effect
+                centre_circle = plt.Circle((0, 0), 0.65, fc='white')
+                self.ax.add_artist(centre_circle)
+
+                self.ax.set_title(
+                    f"Overall Project Progress: {project_name}",
+                    fontsize=14,
+                    weight='bold',
+                    pad=20
+                )
+                self.ax.axis('equal')  # Equal aspect ratio ensures the pie is circular
                 self.fig.tight_layout()
+
             self.current_chart_type = "Project Progress (Pie)"
+
         except Exception as e:
-            messagebox.showerror("خطا", f"خطا در بارگذاری پیشرفت پروژه برای '{project_name}'.\nخطا: {e}")
-            self.display_initial_message(f"خطا در نمایش پیشرفت پروژه: {e}")
+            messagebox.showerror("Error", f"Failed to load project progress for '{project_name}'.\nError: {e}")
+            self.display_initial_message(f"Error showing project progress: {e}")
 
         self.canvas.draw()
 
     def show_project_progress_bar(self):
         project_name = self.project_var.get().strip()
-        self.ax.clear()
+        self.ax.cla()  # پاکسازی کامل‌تر نمودار
         try:
-            # --- Placeholder for Project Progress Bar Chart Logic ---
-            # You would fetch project progress data here, similar to show_project_progress_pie
-            # and then use self.ax.bar() to create a bar chart.
-
-            # Example: A simple bar chart showing percentage
             report_registry = MIVRegistry(project_name)
             progress_data = report_registry.get_project_progress()
-            percentage = progress_data.get("percentage", 0)
+
+            done_weight = progress_data.get("done_weight", 0)
             total_weight = progress_data.get("total_weight", 0)
+            remaining_weight = max(0, total_weight - done_weight)
 
             if total_weight <= 0:
-                self.display_initial_message(f"اطلاعات MTO برای پروژه '{project_name}' یافت نشد یا وزن کل صفر است.")
+                self.display_initial_message(
+                    f"No MTO data found or total weight is zero for project '{project_name}'."
+                )
             else:
-                percentage = max(0, min(100, percentage))  # Clamp between 0 and 100
+                done_percent = (done_weight / total_weight) * 100
+                remaining_percent = 100 - done_percent
 
-                self.ax.bar(['Progress'], [percentage], color='#007BFF', width=0.4)
-                self.ax.set_ylim(0, 100)
-                self.ax.set_ylabel("Percentage (%)", fontsize=11)
-                self.ax.set_title(f"پیشرفت کلی پروژه: {project_name}", fontsize=14, weight='bold', pad=15)
-                self.ax.text(0, percentage + 2, f"{percentage:.1f}%", ha='center', va='bottom', fontsize=11,
-                             weight='bold')  # Add percentage label
+                # داده‌ها و برچسب‌ها
+                labels = ['Done', 'Remaining']
+                weights = [done_weight, remaining_weight]
+                percents = [done_percent, remaining_percent]
 
+                # رسم نمودار
+                bars = self.ax.bar(labels, weights, color=['#4CAF50', '#BDBDBD'], width=0.5)
+
+                # تنظیم محور y با حاشیه بیشتر
+                max_val = max(weights)
+                self.ax.set_ylim(0, max_val * 1.25)
+
+                # عنوان و برچسب‌ها
+                self.ax.set_ylabel("Weight", fontsize=11)
+                self.ax.set_title(f"Project Weight Progress: {project_name}",
+                                  fontsize=14, weight='bold', pad=15)
+
+                # اضافه کردن برچسب‌های بالا با فاصله مناسب
+                for bar, weight, percent in zip(bars, weights, percents):
+                    height = bar.get_height()
+                    self.ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        height + (max_val * 0.05),  # فاصله بیشتر برای جلوگیری از تداخل
+                        f"{weight:.1f} ({percent:.1f}%)",
+                        ha='center', va='bottom', fontsize=10
+                    )
+
+                # حذف حاشیه‌های اضافی
                 self.ax.spines['right'].set_visible(False)
                 self.ax.spines['top'].set_visible(False)
+
                 self.fig.tight_layout()
-            # --- End Placeholder ---
+
             self.current_chart_type = "Project Progress (Bar)"
+
         except Exception as e:
-            messagebox.showerror("خطا",
-                                 f"خطا در تولید گزارش پیشرفت پروژه (نمودار میله ای) برای '{project_name}'.\nخطا: {e}")
-            self.display_initial_message(f"خطا: {e}")
+            messagebox.showerror("Error",
+                                 f"Failed to generate project progress report (bar chart) for '{project_name}'.\nError: {e}")
+            self.display_initial_message(f"Error displaying project progress: {e}")
+
         self.canvas.draw()
 
     def show_line_progress_horizontal_bar(self):
+        # گرفتن نام پروژه و شماره خط از ورودی‌های رابط کاربری
         project_name = self.project_var.get().strip()
         line_no = self.line_no_var.get().strip()
 
+        # پاک‌سازی نمودار قبلی
         self.ax.clear()
+
         try:
+            # ساخت شیء رجیستری برای پروژه
             report_registry = MIVRegistry(project_name)
+            # گرفتن داده‌های پیشرفت برای خط موردنظر
             progress_data = report_registry.get_line_progress(line_no)
+
             percentage = progress_data.get("percentage", 0)
             total_qty = progress_data.get("total_qty", 0)
 
+            # بررسی اینکه آیا داده‌ای وجود دارد یا نه
             if total_qty <= 0:
-                self.display_initial_message(f"اطلاعاتی برای خط '{line_no}' در پروژه '{project_name}' یافت نشد.")
+                self.display_initial_message(f"No data found for line '{line_no}' in project '{project_name}'.")
             else:
+                # محدود کردن درصد بین 0 و 100
                 percentage = max(0, min(100, percentage))
 
-                self.ax.barh([0], [percentage], color='#28A745', height=0.6, label='انجام‌شده')
-                self.ax.barh([0], [100 - percentage], left=[percentage], color='#D3D3D3', height=0.6,
-                             label='باقی‌مانده')
+                # رسم نوار انجام‌شده (سبز)
+                self.ax.barh([0], [percentage], color='#28A745', height=0.6, label='Completed')
 
+                # رسم نوار باقی‌مانده (خاکستری)، از سمت راست نوار سبز ادامه پیدا می‌کند
+                self.ax.barh([0], [100 - percentage], left=[percentage], color='#D3D3D3', height=0.6, label='Remaining')
+
+                # نوشتن مقدار درصد وسط نوار سبز
                 self.ax.text(percentage / 2, 0, f"{percentage:.1f}%", ha='center', va='center',
                              fontsize=12, color='white', weight='bold')
 
+                # تنظیمات محور
                 self.ax.set_xlim(0, 100)
                 self.ax.set_xticks([0, 25, 50, 75, 100])
                 self.ax.set_xticklabels([f'{i}%' for i in [0, 25, 50, 75, 100]])
                 self.ax.set_yticks([])
-                self.ax.set_xlabel("درصد پیشرفت", fontsize=11)
-                self.ax.set_title(f"پیشرفت متریال برای خط {line_no}", fontsize=14, weight='bold', pad=15)
+                self.ax.set_xlabel("Progress Percentage", fontsize=11)
+                self.ax.set_title(f"Line Material Progress - Line {line_no}", fontsize=14, weight='bold', pad=15)
 
+                # حذف قاب‌های اضافی و تنظیمات ظاهری
                 self.ax.spines['right'].set_visible(False)
                 self.ax.spines['top'].set_visible(False)
                 self.ax.spines['left'].set_visible(False)
@@ -279,44 +332,80 @@ class ReportsWindow(tk.Toplevel):
                 self.ax.tick_params(axis='x', length=4, width=0.5)
 
                 self.fig.tight_layout()
-            self.current_chart_type = "Line Progress (Horizontal Bar)"
-        except Exception as e:
-            messagebox.showerror("خطا", f"خطا در بارگذاری پیشرفت خط برای '{line_no}'.\nخطا: {e}")
-            self.display_initial_message(f"خطا در نمایش پیشرفت خط: {e}")
 
+            # ذخیره نوع نمودار فعلی
+            self.current_chart_type = "Line Progress (Horizontal Bar)"
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load line progress for '{line_no}'.\nError: {e}")
+            self.display_initial_message(f"Error showing line progress: {e}")
+
+        # رسم نهایی نمودار
         self.canvas.draw()
 
     def show_line_material_breakdown(self):
+        import matplotlib.patches as mpatches
+        import numpy as np
+
         project_name = self.project_var.get().strip()
         line_no = self.line_no_var.get().strip()
         self.ax.clear()
         try:
-            # --- Placeholder for Line Material Breakdown Bar Chart Logic ---
-            # This is where you'd query MIVRegistry for material breakdown data for a line
-            # e.g., {'Pipe': 100, 'Elbow': 20, 'Flange': 10}
             report_registry = MIVRegistry(project_name)
-            material_data = report_registry.get_line_material_breakdown(line_no)  # Assuming this method exists
+            material_data = report_registry.get_line_material_breakdown(line_no)
 
             if not material_data:
                 self.display_initial_message(
-                    f"اطلاعات تفکیک متریال برای خط '{line_no}' در پروژه '{project_name}' یافت نشد.")
+                    f"No material breakdown data found for line '{line_no}' in project '{project_name}'.")
             else:
                 materials = list(material_data.keys())
                 quantities = list(material_data.values())
+                total_qty = sum(quantities)
 
-                self.ax.bar(materials, quantities, color=plt.cm.viridis(range(len(materials))))  # Use a colormap
+                cmap = plt.get_cmap('Set2')
+                colors = [cmap(i) for i in np.linspace(0, 1, len(materials))]
+
+                bars = self.ax.bar(range(len(materials)), quantities, color=colors)
+
+                # برچسب‌های محور x به صورت عمودی
+                self.ax.set_xticks(range(len(materials)))
+                self.ax.set_xticklabels(materials, rotation=90, fontsize=9)
+                self.ax.tick_params(axis='x', which='both', length=0)  # حذف خط‌های کوچک محور x
+
+                # عنوان نمودار و برچسب محور y
                 self.ax.set_ylabel("Quantity", fontsize=11)
-                self.ax.set_title(f"تفکیک متریال برای خط: {line_no}", fontsize=14, weight='bold', pad=15)
-                self.ax.tick_params(axis='x', rotation=45)  # Rotate x-labels if too long
+                self.ax.set_title(f"Material Breakdown for Line {line_no}", fontsize=14, weight='bold', pad=20)
+
+                max_qty = max(quantities)
+                self.ax.set_ylim(0, max_qty * 1.15)
+
+                # مقدار + درصد بالای ستون‌ها
+                for bar, qty in zip(bars, quantities):
+                    percent = (qty / total_qty) * 100 if total_qty > 0 else 0
+                    self.ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + (max_qty * 0.02),
+                        f"{qty:.1f} ({percent:.1f}%)",
+                        ha='center',
+                        va='bottom',
+                        fontsize=8,
+                        rotation=90  # 👈 عمودی کردن متن
+                    )
 
                 self.ax.spines['right'].set_visible(False)
                 self.ax.spines['top'].set_visible(False)
-                self.fig.tight_layout()
-            # --- End Placeholder ---
+
+                # لجند سمت راست
+                legend_patches = [mpatches.Patch(color=colors[i], label=mat) for i, mat in enumerate(materials)]
+                self.ax.legend(handles=legend_patches, bbox_to_anchor=(1.05, 1), loc='upper left',
+                               borderaxespad=0., fontsize=9)
+
+                self.fig.tight_layout(rect=[0, 0, 0.85, 1])
+
             self.current_chart_type = "Line Material Breakdown (Bar)"
         except Exception as e:
-            messagebox.showerror("خطا", f"خطا در تولید گزارش تفکیک متریال خط برای '{line_no}'.\nخطا: {e}")
-            self.display_initial_message(f"خطا: {e}")
+            messagebox.showerror("Error", f"Failed to generate material breakdown for line '{line_no}'.\nError: {e}")
+            self.display_initial_message(f"Error generating material breakdown: {e}")
         self.canvas.draw()
 
     def export_to_pdf(self):
@@ -368,3 +457,48 @@ class ReportsWindow(tk.Toplevel):
             )
         except Exception as e:
             messagebox.showerror("خطای صادرات", f"خطای غیرمنتظره‌ای در هنگام صادرات PDF رخ داد.\nخطا: {e}")
+
+    def show_line_material_progress(self):
+        project = self.project_var.get()
+        line_no = self.line_no_var.get()
+
+        if not project or not line_no:
+            self.display_initial_message("Please select a valid project and enter a line number.")
+            return
+
+        try:
+            # فرض بر این است که تابع get_material_progress را در MIVRegistry ساختیم:
+            # خروجی باید به صورت DataFrame یا لیست دیکشنری با این ستون‌ها باشد:
+            # Item Code, Description, Total Qty, Used Qty, Remaining Qty
+            progress_df = self.registry.get_material_progress(project, line_no)
+
+            if progress_df.empty:
+                self.display_initial_message("No material progress data available for this line.")
+                return
+
+            self.ax.clear()
+
+            # داده‌ها را آماده کنیم
+            labels = progress_df["Item Code"].astype(str).tolist()
+            used = progress_df["Used Qty"].astype(float).tolist()
+            remaining = progress_df["Remaining Qty"].astype(float).tolist()
+
+            x = range(len(labels))
+
+            # نمودار stacked bar رسم کنیم
+            self.ax.bar(x, used, label="Used Qty", color="tab:blue")
+            self.ax.bar(x, remaining, bottom=used, label="Remaining Qty", color="tab:gray", alpha=0.5)
+
+            # لیبل آیتم کدها عمودی و مرتب
+            self.ax.set_xticks(x)
+            self.ax.set_xticklabels(labels, rotation=90, fontsize=8)
+
+            self.ax.set_ylabel("Quantity")
+            self.ax.set_title(f"Material Progress for Project '{project}', Line {line_no}")
+            self.ax.legend()
+
+            self.fig.tight_layout()
+            self.canvas.draw()
+
+        except Exception as e:
+            self.display_initial_message(f"Error loading data: {e}")

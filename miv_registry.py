@@ -503,6 +503,14 @@ class MIVRegistry:
         return 0
 
     def update_progress_file(self, project, line_no, updates):
+        """
+        فایل پیشرفت پروژه را با استفاده از داده‌های جدید به‌روزرسانی می‌کند.
+        برای آیتم‌هایی که Item Code ندارند، از Description به‌عنوان کلید استفاده می‌شود.
+        برای محاسبه مقدار کل (Total Qty) از فایل MTO استفاده می‌شود:
+            - اگر Type برابر با pipe باشد → مقدار از LENGTH(M)
+            - در غیر این صورت → مقدار از QUANTITY
+        """
+
         path = os.path.join(self.project_dir, f"MTO_PROGRESS-{project}.csv")
         if os.path.exists(path):
             df = pd.read_csv(path)
@@ -516,29 +524,42 @@ class MIVRegistry:
         mto_df = pd.read_csv(mto_path) if os.path.exists(mto_path) else pd.DataFrame()
 
         for item_code, qty, unit, desc in updates:
+            # اگر آیتم‌کد نامعتبر باشد، از Description استفاده می‌کنیم
             use_desc_key = not item_code or pd.isna(item_code) or str(item_code).strip() == ""
 
-            # انتخاب ردیف MTO مرتبط
+            # انتخاب ردیف MTO مرتبط با این خط و آیتم
             if use_desc_key:
-                mto_match_all = mto_df[
+                mto_match = mto_df[
                     (mto_df["Line No"].astype(str) == str(line_no)) &
                     (mto_df["Description"].astype(str).str.strip() == str(desc).strip())
                     ]
             else:
-                mto_match_all = mto_df[
+                mto_match = mto_df[
                     (mto_df["Line No"].astype(str) == str(line_no)) &
                     (mto_df["Itemcode"].astype(str).str.strip() == str(item_code).strip())
                     ]
 
-            # محاسبه Total Qty بر اساس Type
+            # محاسبه Total Qty با توجه به Type
+            # محاسبه Total Qty با توجه به Type
             total_qty = 0
-            if not mto_match_all.empty:
-                for _, mto_row in mto_match_all.iterrows():
-                    item_type = str(mto_row.get("Type", "")).strip().lower()
-                    if item_type == "pipe":
-                        total_qty += pd.to_numeric(mto_row.get("LENGTH(M)"), errors='coerce').fillna(0)
-                    else:
-                        total_qty += pd.to_numeric(mto_row.get("QUANTITY"), errors='coerce').fillna(0)
+            if not mto_match.empty:
+                mto_match = mto_match.copy()
+                mto_match["Type"] = mto_match["Type"].astype(str).str.lower().str.replace(" ", "")
+
+                pipe_mask = mto_match["Type"].str.contains("pipe", na=False)
+
+                # اگر آیتم pipe باشد → LENGTH(M)
+                if pipe_mask.any() and "LENGTH(M)" in mto_match.columns:
+                    total_qty += pd.to_numeric(
+                        mto_match.loc[pipe_mask, "LENGTH(M)"], errors='coerce'
+                    ).fillna(0).sum()
+
+                # اگر آیتم غیر pipe باشد → QUANTITY
+                non_pipe_mask = ~pipe_mask
+                if non_pipe_mask.any() and "QUANTITY" in mto_match.columns:
+                    total_qty += pd.to_numeric(
+                        mto_match.loc[non_pipe_mask, "QUANTITY"], errors='coerce'
+                    ).fillna(0).sum()
 
             # ساختن شرط برای فیلتر رکوردهای موجود در فایل پیشرفت
             if use_desc_key:
@@ -548,18 +569,17 @@ class MIVRegistry:
                 mask = (df["Line No"].astype(str) == str(line_no)) & \
                        (df["Item Code"].astype(str).str.strip() == str(item_code).strip())
 
-            # اگر رکورد موجود باشد -> آپدیت
+            # اگر رکورد موجود باشد → فقط آپدیت
             if not df[mask].empty:
                 idx = df[mask].index[0]
-                prev_used = pd.to_numeric(df.at[idx, "Used Qty"], errors='coerce').fillna(0)
+                prev_used = pd.to_numeric(df.at[idx, "Used Qty"], errors='coerce') or 0
                 new_used = prev_used + qty
                 df.at[idx, "Used Qty"] = new_used
-                df.at[idx, "Total Qty"] = total_qty  # به‌روزرسانی مقدار کل
                 df.at[idx, "Remaining Qty"] = max(0, total_qty - new_used)
                 df.at[idx, "Last Updated"] = self.get_shamsi_date()
             else:
                 # درج رکورد جدید
-                new_row = pd.DataFrame([{
+                df = pd.concat([df, pd.DataFrame([{
                     "Line No": line_no,
                     "Item Code": "" if use_desc_key else item_code,
                     "Description": desc,
@@ -568,100 +588,9 @@ class MIVRegistry:
                     "Used Qty": qty,
                     "Remaining Qty": max(0, total_qty - qty),
                     "Last Updated": self.get_shamsi_date()
-                }])
-                df = pd.concat([df, new_row], ignore_index=True)
+                }])], ignore_index=True)
 
         df.to_csv(path, index=False)
-
-    # def update_progress_file(self, project, line_no, updates):
-    #     """
-    #     فایل پیشرفت پروژه را با استفاده از داده‌های جدید به‌روزرسانی می‌کند.
-    #     برای آیتم‌هایی که Item Code ندارند، از Description به‌عنوان کلید استفاده می‌شود.
-    #     برای محاسبه مقدار کل (Total Qty) از فایل MTO استفاده می‌شود:
-    #         - اگر Type برابر با pipe باشد → مقدار از LENGTH(M)
-    #         - در غیر این صورت → مقدار از QUANTITY
-    #     """
-    #
-    #     path = os.path.join(self.project_dir, f"MTO_PROGRESS-{project}.csv")
-    #     if os.path.exists(path):
-    #         df = pd.read_csv(path)
-    #     else:
-    #         df = pd.DataFrame(columns=[
-    #             "Line No", "Item Code", "Description", "Unit",
-    #             "Total Qty", "Used Qty", "Remaining Qty", "Last Updated"
-    #         ])
-    #
-    #     mto_path = os.path.join(self.project_dir, f"MTO-{project}.csv")
-    #     mto_df = pd.read_csv(mto_path) if os.path.exists(mto_path) else pd.DataFrame()
-    #
-    #     for item_code, qty, unit, desc in updates:
-    #         # اگر آیتم‌کد نامعتبر باشد، از Description استفاده می‌کنیم
-    #         use_desc_key = not item_code or pd.isna(item_code) or str(item_code).strip() == ""
-    #
-    #         # انتخاب ردیف MTO مرتبط با این خط و آیتم
-    #         if use_desc_key:
-    #             mto_match = mto_df[
-    #                 (mto_df["Line No"].astype(str) == str(line_no)) &
-    #                 (mto_df["Description"].astype(str).str.strip() == str(desc).strip())
-    #                 ]
-    #         else:
-    #             mto_match = mto_df[
-    #                 (mto_df["Line No"].astype(str) == str(line_no)) &
-    #                 (mto_df["Itemcode"].astype(str).str.strip() == str(item_code).strip())
-    #                 ]
-    #
-    #         # محاسبه Total Qty با توجه به Type
-    #         # محاسبه Total Qty با توجه به Type
-    #         total_qty = 0
-    #         if not mto_match.empty:
-    #             mto_match = mto_match.copy()
-    #             mto_match["Type"] = mto_match["Type"].astype(str).str.lower().str.replace(" ", "")
-    #
-    #             pipe_mask = mto_match["Type"].str.contains("pipe", na=False)
-    #
-    #             # اگر آیتم pipe باشد → LENGTH(M)
-    #             if pipe_mask.any() and "LENGTH(M)" in mto_match.columns:
-    #                 total_qty += pd.to_numeric(
-    #                     mto_match.loc[pipe_mask, "LENGTH(M)"], errors='coerce'
-    #                 ).fillna(0).sum()
-    #
-    #             # اگر آیتم غیر pipe باشد → QUANTITY
-    #             non_pipe_mask = ~pipe_mask
-    #             if non_pipe_mask.any() and "QUANTITY" in mto_match.columns:
-    #                 total_qty += pd.to_numeric(
-    #                     mto_match.loc[non_pipe_mask, "QUANTITY"], errors='coerce'
-    #                 ).fillna(0).sum()
-    #
-    #         # ساختن شرط برای فیلتر رکوردهای موجود در فایل پیشرفت
-    #         if use_desc_key:
-    #             mask = (df["Line No"].astype(str) == str(line_no)) & \
-    #                    (df["Description"].astype(str).str.strip() == str(desc).strip())
-    #         else:
-    #             mask = (df["Line No"].astype(str) == str(line_no)) & \
-    #                    (df["Item Code"].astype(str).str.strip() == str(item_code).strip())
-    #
-    #         # اگر رکورد موجود باشد → فقط آپدیت
-    #         if not df[mask].empty:
-    #             idx = df[mask].index[0]
-    #             prev_used = pd.to_numeric(df.at[idx, "Used Qty"], errors='coerce') or 0
-    #             new_used = prev_used + qty
-    #             df.at[idx, "Used Qty"] = new_used
-    #             df.at[idx, "Remaining Qty"] = max(0, total_qty - new_used)
-    #             df.at[idx, "Last Updated"] = self.get_shamsi_date()
-    #         else:
-    #             # درج رکورد جدید
-    #             df = pd.concat([df, pd.DataFrame([{
-    #                 "Line No": line_no,
-    #                 "Item Code": "" if use_desc_key else item_code,
-    #                 "Description": desc,
-    #                 "Unit": unit,
-    #                 "Total Qty": total_qty,
-    #                 "Used Qty": qty,
-    #                 "Remaining Qty": max(0, total_qty - qty),
-    #                 "Last Updated": self.get_shamsi_date()
-    #             }])], ignore_index=True)
-    #
-    #     df.to_csv(path, index=False)
 
     def is_line_miv_complete(self, line_no):
         progress_path = os.path.join(self.project_dir, f"MTO_PROGRESS-{self.project}.csv")
@@ -884,4 +813,218 @@ class MIVRegistry:
         except Exception as e:
             print(f"⚠️ خطا در محاسبه پیشرفت خط '{line_no}': {e}")
             return default_return
+
+    def get_line_material_breakdown(self, line_no):
+        """
+        Returns a dictionary of item codes and their actual quantities for a specific line.
+        If item type is 'pipe', it uses LENGTH(M). Otherwise, it uses QUANTITY.
+        Example:
+            {
+                "ITM-001": 120.0,
+                "ITM-045": 40.0,
+                "ITM-078": 25.0
+            }
+        """
+        import os
+        import pandas as pd
+
+        mto_path = os.path.join(self.project_dir, f"MTO-{self.project}.csv")
+
+        if not os.path.exists(mto_path):
+            return {}
+
+        try:
+            mto_df = pd.read_csv(mto_path)
+
+            # بررسی ستون‌های ضروری
+            required_cols = {"Line No", "Itemcode", "Type"}
+            if not required_cols.issubset(mto_df.columns):
+                return {}
+
+            filtered = mto_df[mto_df["Line No"].astype(str) == str(line_no)].copy()
+
+            if filtered.empty:
+                return {}
+
+            # نرمال‌سازی فیلدها
+            filtered["Itemcode"] = filtered["Itemcode"].astype(str).str.strip().str.upper()
+            filtered["Type"] = filtered["Type"].astype(str).str.lower().str.replace(" ", "")
+
+            # انتخاب ستون مناسب برای مقدار واقعی
+            is_pipe = filtered["Type"].str.contains("pipe", na=False)
+
+            filtered["ActualQty"] = 0.0  # مقدار جدید برای محاسبه نهایی
+
+            if "LENGTH(M)" in filtered.columns:
+                filtered.loc[is_pipe, "ActualQty"] = pd.to_numeric(
+                    filtered.loc[is_pipe, "LENGTH(M)"], errors="coerce"
+                ).fillna(0)
+
+            if "QUANTITY" in filtered.columns:
+                filtered.loc[~is_pipe, "ActualQty"] = pd.to_numeric(
+                    filtered.loc[~is_pipe, "QUANTITY"], errors="coerce"
+                ).fillna(0)
+
+            # گروه‌بندی بر اساس Itemcode و جمع ActualQty
+            breakdown = filtered.groupby("Itemcode")["ActualQty"].sum().to_dict()
+
+            return breakdown
+
+        except Exception as e:
+            print(f"⚠️ Error reading material breakdown for line '{line_no}': {e}")
+            return {}
+
+    def get_line_material_progress(self, line_no):
+        """
+        برمی‌گرداند لیستی از دیکشنری‌ها شامل اطلاعات هر آیتم در خط داده‌شده.
+        اطلاعات شامل: Item Code, Description, Total Qty, Used Qty, Remaining Qty, Unit
+
+        [{
+            "Item Code": "P1234",
+            "Description": "Pipe 6in",
+            "Total Qty": 12.0,
+            "Used Qty": 8.0,
+            "Remaining Qty": 4.0,
+            "Unit": "M"
+        }, ...]
+        """
+        mto_path = os.path.join(self.project_dir, f"MTO-{self.project}.csv")
+        progress_path = os.path.join(self.project_dir, f"MTO_PROGRESS-{self.project}.csv")
+
+        if not os.path.exists(mto_path):
+            return []
+
+        mto_df = pd.read_csv(mto_path)
+        mto_df = mto_df[mto_df["Line No"].astype(str) == str(line_no)].copy()
+
+        if mto_df.empty:
+            return []
+
+        # بارگذاری فایل پیشرفت در صورت وجود
+        if os.path.exists(progress_path):
+            progress_df = pd.read_csv(progress_path)
+            progress_df = progress_df[progress_df["Line No"].astype(str) == str(line_no)].copy()
+        else:
+            progress_df = pd.DataFrame(columns=[
+                "Line No", "Item Code", "Description", "Used Qty", "Remaining Qty", "Total Qty", "Unit"
+            ])
+
+        def normalize(value):
+            return str(value).strip().upper() if not pd.isna(value) else ""
+
+        # ساخت کلید تطبیق برای هر ردیف
+        mto_df["Key"] = mto_df.apply(
+            lambda row: normalize(row.get("Itemcode")) if normalize(row.get("Itemcode")) != "" else normalize(
+                row.get("Description")),
+            axis=1
+        )
+
+        if "Type" in mto_df.columns:
+            mto_df["Type"] = mto_df["Type"].astype(str).str.lower().str.replace(" ", "")
+        else:
+            mto_df["Type"] = ""
+
+        result = []
+        for _, row in mto_df.iterrows():
+            key = row["Key"]
+            item_code = row.get("Itemcode", "")
+            desc = row.get("Description", "")
+            unit = row.get("Unit", "")
+            type_ = row["Type"]
+
+            if "pipe" in type_ and "LENGTH(M)" in row:
+                total_qty = pd.to_numeric(row["LENGTH(M)"], errors='coerce')
+            elif "QUANTITY" in row:
+                total_qty = pd.to_numeric(row["QUANTITY"], errors='coerce')
+            else:
+                total_qty = 0
+
+            progress_row = progress_df[
+                progress_df.apply(lambda r: normalize(r["Item Code"]) if normalize(r["Item Code"]) != "" else normalize(
+                    r["Description"]), axis=1) == key
+                ]
+
+            if not progress_row.empty:
+                used_qty = pd.to_numeric(progress_row["Used Qty"].values[0], errors='coerce')
+                remaining_qty = pd.to_numeric(progress_row["Remaining Qty"].values[0], errors='coerce')
+            else:
+                used_qty = 0
+                remaining_qty = total_qty
+
+            result.append({
+                "Item Code": item_code,
+                "Description": desc,
+                "Unit": unit,
+                "Total Qty": total_qty,
+                "Used Qty": used_qty,
+                "Remaining Qty": remaining_qty
+            })
+
+        return result
+
+    def get_material_progress(self, project, line_no):
+        progress_path = os.path.join(self.project_dir, f"MTO_PROGRESS-{project}.csv")
+        mto_path = os.path.join(self.project_dir, f"MTO-{project}.csv")
+
+        if not os.path.exists(progress_path) or not os.path.exists(mto_path):
+            return pd.DataFrame()  # داده‌ای موجود نیست
+
+        mto_df = pd.read_csv(mto_path)
+        progress_df = pd.read_csv(progress_path)
+
+        # پاکسازی نام ستون‌ها (مفید در برابر فاصله یا اشتباه تایپی)
+        mto_df.columns = mto_df.columns.str.strip()
+        progress_df.columns = progress_df.columns.str.strip()
+
+        # فیلتر آیتم‌های مربوط به خط مورد نظر و ساخت کپی مستقل برای جلوگیری از هشدار
+        mto_line = mto_df[mto_df["Line No"] == line_no].copy()
+        progress_line = progress_df[progress_df["Line No"] == line_no].copy()
+
+        # ساخت کلید یکتا برای تطبیق آیتم‌ها
+        def normalize_key(row):
+            if pd.notna(row.get("Itemcode")) and str(row["Itemcode"]).strip():
+                return str(row["Itemcode"]).strip()
+            else:
+                return str(row.get("Description", "")).strip()
+
+        mto_line["Key"] = mto_line.apply(normalize_key, axis=1)
+        progress_line["Key"] = progress_line.apply(
+            lambda row: str(row.get("Item Code", "")).strip() if str(row.get("Item Code", "")).strip()
+            else str(row.get("Description", "")).strip(), axis=1)
+
+        records = []
+        keys = mto_line["Key"].unique()
+
+        for key in keys:
+            total_qty = mto_line[mto_line["Key"] == key]
+
+            # بررسی نوع آیتم (pipe یا غیر pipe)
+            pipe_mask = total_qty["Type"].astype(str).str.lower().str.replace(" ", "").str.contains("pipe", na=False)
+
+            total_qty_value = 0
+            if pipe_mask.any() and "LENGTH(M)" in total_qty.columns:
+                total_qty_value += pd.to_numeric(total_qty.loc[pipe_mask, "LENGTH(M)"], errors='coerce').fillna(0).sum()
+            if (~pipe_mask).any() and "QUANTITY" in total_qty.columns:
+                total_qty_value += pd.to_numeric(total_qty.loc[~pipe_mask, "QUANTITY"], errors='coerce').fillna(0).sum()
+
+            # مقدار مصرف‌شده
+            used_qty_value = 0
+            used_rows = progress_line[progress_line["Key"] == key]
+            if not used_rows.empty and "Used Qty" in used_rows.columns:
+                used_qty_value = pd.to_numeric(used_rows["Used Qty"], errors='coerce').fillna(0).sum()
+
+            # گرفتن اطلاعات اولیه برای نمایش
+            first_row = total_qty.iloc[0]
+            records.append({
+                "Item Code": first_row.get("Itemcode", ""),
+                "Description": first_row.get("Description", ""),
+                "Total Qty": total_qty_value,
+                "Used Qty": used_qty_value,
+                "Remaining Qty": max(0, total_qty_value - used_qty_value)
+            })
+
+        return pd.DataFrame(records)
+
+
+
 
