@@ -3,7 +3,6 @@ import glob
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from miv_registry import MIVRegistry
-import subprocess  # 🖥️ اجرای دستورات سیستمی مثل whoami
 import pandas as pd
 from console_text import ConsoleText
 from helpwindow import HelpWindow
@@ -23,7 +22,15 @@ class MIVApp(tk.Tk):
     PROJECT_LOCATIONS = {
         "P01": ["U106A"],
         "P02": ["U109A", "U109B"],
-        "P03": ["U107A", ],
+        "P03": ["U107A"],
+        "P04": ["ALL" ],
+        "P05": ["ALL",],
+        "P06": ["ALL"],
+        "P07": ["ALL"],
+        "P08": ["ALL"],
+        "P012": ["ALL"],
+        "P013": ["ALL"],
+        "P015": ["ALL"],
         # 👇 می‌تونی برای پروژه‌های دیگه هم اضافه کنی
         # "P04": ["..."]
     }
@@ -115,7 +122,7 @@ class MIVApp(tk.Tk):
         row_rb = ttk.Frame(frame_form)
         row_rb.pack(fill=tk.X, pady=2)
         ttk.Label(row_rb, text="Registered By: ", width=15).pack(side=tk.LEFT)
-        system_user = subprocess.check_output("whoami", shell=True).decode("utf-8").strip()
+        system_user = os.getlogin()
         lbl_rb = ttk.Label(row_rb, text=system_user, background="white", anchor="w", relief="sunken")
         lbl_rb.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.entries["Registered By"] = lbl_rb
@@ -218,16 +225,6 @@ class MIVApp(tk.Tk):
         self.ax.axis('equal')  # برای اطمینان از دایره‌ای بودن نمودار
         self.fig.tight_layout()  # تنظیم فاصله ها
         self.canvas.draw()
-
-    def open_reports_window(self):
-        """Opens the dedicated window for reports and charts."""
-        if not self.registry:
-            messagebox.showinfo("Info", "Please load a project first to provide context to the reports window.")
-            # Even if no project is loaded, we can open the window.
-            # The reports window will handle the logic.
-
-        reports_win = ReportsWindow(self, self.registry)
-        reports_win.grab_set()  # This makes the new window modal
 
     def show_mto_table(self):
         if not self.registry:
