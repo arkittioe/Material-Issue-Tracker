@@ -4,6 +4,8 @@ import sys
 import webbrowser
 import subprocess
 import os
+import logging
+
 from functools import partial
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame,
@@ -197,7 +199,7 @@ class MainWindow(QMainWindow):
         self.update_dashboard_btn.clicked.connect(
             self.event_handlers.handle_update_dashboard_button_click
         )
-        self.details_btn.clicked.connect(self.show_line_details)
+        self.details_btn.clicked.connect(self.show_advanced_dashboard)
         self.export_line_status_btn.clicked.connect(
             self.event_handlers.handle_line_status_export
         )
@@ -273,7 +275,7 @@ class MainWindow(QMainWindow):
             )
 
     def update_line_dashboard(self, line_no=None):
-        """به‌روزرسانی نمودار داشبورد خط"""
+        """بروزرسانی نمودار Pie Chart با داده‌های inch_dia"""
         if not self.current_project:
             return
 
@@ -291,37 +293,43 @@ class MainWindow(QMainWindow):
             self.canvas.draw()
             return
 
-        progress = self.dm.get_line_progress(self.current_project.id, line_no)
-        percentage = progress.get("percentage", 0)
+        try:
+            progress = self.dm.get_line_progress(self.current_project.id, line_no, readonly=False)
 
-        if progress["total_weight"] == 0:
-            self.dashboard_ax.text(
-                0.5, 0.5,
-                "No data found for this line",
-                ha='center', va='center'
-            )
+            total = progress['total_weight']
+            done = progress['done_weight']
+            percentage = progress['percentage']
+
+            if total > 0:
+                remaining = total - done
+                sizes = [done, remaining]
+                labels = ['Completed', 'Remaining']
+                colors = ['#28a745', '#dc3545']
+                explode = (0.05, 0)
+
+                self.dashboard_ax.pie(
+                    sizes, labels=labels, autopct='%1.1f%%',
+                    startangle=90, colors=colors, explode=explode
+                )
+
+                # 🆕 نمایش واحد inch-dia
+                self.dashboard_ax.set_title(
+                    f"Line {line_no}: {percentage:.1f}%\n"
+                    f"({done:.1f} / {total:.1f} inch-dia)",
+                    fontsize=14, weight='bold'
+                )
+            else:
+                self.dashboard_ax.text(
+                    0.5, 0.5, 'No Data',
+                    ha='center', va='center', fontsize=16
+                )
+
             self.canvas.draw()
-            return
 
-        labels = ['Used', 'Remaining']
-        sizes = [percentage, 100 - percentage]
-        colors = ['#4CAF50', '#BDBDBD']
-        explode = (0.1, 0) if percentage > 0 else (0, 0)
-
-        self.dashboard_ax.pie(
-            sizes,
-            explode=explode,
-            labels=labels,
-            colors=colors,
-            autopct='%1.1f%%',
-            shadow=True,
-            startangle=90
-        )
-        self.dashboard_ax.axis('equal')
-        self.dashboard_ax.set_title(f"Line progress: {line_no} ({percentage}%)")
-
-        self.fig.tight_layout()
-        self.canvas.draw()
+        except Exception as e:
+            print(f"⚠️ خطا در بروزرسانی داشبورد: {e}")  # 🔄 تغییر به print
+            import traceback
+            traceback.print_exc()
 
     def log_to_console(self, message, level="info"):
         """نمایش پیام در کنسول با رنگ‌بندی"""
@@ -357,32 +365,35 @@ class MainWindow(QMainWindow):
         msg_box.setIcon(icon_map.get(level, QMessageBox.Icon.NoIcon))
         msg_box.exec()
 
-    def show_line_details(self):
-        """نمایش جزئیات خط در داشبورد وب (با رمز)"""
-        dlg = QInputDialog(self)
-        dlg.setWindowTitle("ورود رمز")
-        dlg.setLabelText("رمز داشبورد را وارد کنید:")
-        dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
-        ok = dlg.exec()
-
-        password = dlg.textValue()
-
-        if not ok or password != self.dashboard_password:
-            self.show_message("خطا", "رمز اشتباه است یا عملیات لغو شد.", "error")
+    def show_advanced_dashboard(self):
+        """نمایش داشبورد پیشرفته پروژه (Modeless)"""
+        if not self.current_project:
+            self.show_message("خطا", "لطفاً ابتدا یک پروژه را بارگذاری کنید.", "warning")
             return
 
-        python_executable = sys.executable
         try:
-            if not hasattr(self, 'api_process') or self.api_process.poll() is not None:
-                self.api_process = subprocess.Popen([python_executable, "report_api.py"])
+            from advanced_dashboard_dialog import AdvancedDashboardDialog
 
-            if not hasattr(self, 'dashboard_process') or self.dashboard_process.poll() is not None:
-                self.dashboard_process = subprocess.Popen([python_executable, "dashboard.py"])
+            # ✅ اگر قبلاً باز شده، فوکوس بده
+            if hasattr(self, 'dashboard_window') and self.dashboard_window.isVisible():
+                self.dashboard_window.raise_()
+                self.dashboard_window.activateWindow()
+                return
 
-            webbrowser.open("http://127.0.0.1:8050")
+            # ✅ ساخت دیالوگ Modeless
+            self.dashboard_window = AdvancedDashboardDialog(
+                self.dm,
+                self.current_project.id,
+                self
+            )
+
+            # ✅ نمایش بدون بلوک کردن پنجره اصلی
+            self.dashboard_window.show()
 
         except Exception as e:
-            self.show_message("خطا", f"خطا در اجرای سرورهای گزارش‌گیری: {e}", "error")
+            self.show_message("خطا", f"خطا در باز کردن داشبورد:\n{e}", "error")
+            import traceback
+            logging.error(f"Error opening advanced dashboard:\n{traceback.format_exc()}")
 
     def open_spool_manager(self):
         """باز کردن دیالوگ مدیریت اسپول‌ها"""

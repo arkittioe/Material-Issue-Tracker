@@ -336,13 +336,12 @@ class DataManager:
 
     def rebuild_mto_progress_for_line(self, project_id, line_no):
         """
-        (بهینه‌سازی شده)
-        آمار پیشرفت تمام آیتم‌های MTO یک خط را با استفاده از یک کوئری جامع و بهینه بازسازی می‌کند.
+        بازسازی کامل آمار پیشرفت با استفاده از inch_dia
+        (نسخه اصلاح‌شده)
         """
         session = self.get_session()
         try:
-            # گام ۱: تمام MTO Item های مورد نیاز را به همراه مصرف مستقیم (direct_used) واکشی می‌کنیم.
-            # از left join استفاده می‌شود تا آیتم‌های بدون مصرف هم لیست شوند.
+            # گام 1: واکشی آیتم‌های MTO با مصرف مستقیم
             base_query = (
                 session.query(
                     MTOItem,
@@ -355,9 +354,9 @@ class DataManager:
 
             mto_items_with_direct_usage = base_query.all()
             if not mto_items_with_direct_usage:
-                return  # اگر خط هیچ آیتمی نداشت، خارج شو
+                return
 
-            # گام ۲: تمام مصرف‌های اسپول مربوط به این خط را یک‌جا واکشی می‌کنیم.
+            # گام 2: واکشی مصرف اسپول
             spool_consumptions_in_line = (
                 session.query(
                     func.upper(SpoolItem.component_type).label("spool_type"),
@@ -371,7 +370,6 @@ class DataManager:
                 .all()
             )
 
-            # گام ۳: مصرف اسپول را در یک دیکشنری برای دسترسی سریع آماده می‌کنیم.
             spool_usage_map = {
                 (usage.spool_type, usage.p1_bore): usage.total_spool_used
                 for usage in spool_consumptions_in_line
@@ -380,12 +378,23 @@ class DataManager:
             progress_updates = []
             mto_item_ids_in_line = [item.id for item, _ in mto_items_with_direct_usage]
 
-            # گام ۴: روی نتایج واکشی شده حرکت کرده و محاسبات را در پایتون انجام می‌دهیم.
+            # گام 3: محاسبات برای هر آیتم
             for mto_item, direct_used in mto_items_with_direct_usage:
-                is_pipe = mto_item.item_type and 'pipe' in mto_item.item_type.lower()
-                total_required = mto_item.length_m if is_pipe else mto_item.quantity
+                # ✅ Total از ستون inch_dia که از قبل محاسبه شده
+                total_inch_dia = mto_item.inch_dia or 0
 
-                # پیدا کردن مصرف اسپول معادل
+                # تعیین base_qty برای محاسبه نسبت
+                is_pipe = mto_item.item_type and 'pipe' in mto_item.item_type.lower()
+                base_qty = mto_item.length_m if is_pipe else mto_item.quantity
+
+                # ✅ محاسبه مصرف مستقیم به صورت نسبت
+                if base_qty and base_qty > 0:
+                    direct_ratio = (direct_used or 0) / base_qty
+                    direct_used_inch_dia = total_inch_dia * direct_ratio
+                else:
+                    direct_used_inch_dia = 0
+
+                # ✅ محاسبه مصرف اسپول
                 mto_type_upper = str(mto_item.item_type).upper().strip()
                 spool_equivalents = {mto_type_upper}
                 for key, aliases in SPOOL_TYPE_MAPPING.items():
@@ -393,14 +402,21 @@ class DataManager:
                         spool_equivalents.update([key] + list(aliases))
                         break
 
-                spool_used = 0
+                spool_used_raw = 0
                 for eq_type in spool_equivalents:
-                    spool_used += spool_usage_map.get((eq_type, mto_item.p1_bore_in), 0)
+                    spool_used_raw += spool_usage_map.get((eq_type, mto_item.p1_bore_in), 0)
 
-                total_used = (direct_used or 0) + spool_used
-                remaining = max(0, (total_required or 0) - total_used)
+                # ✅ تبدیل مصرف اسپول به inch_dia با همان روش نسبت
+                if base_qty and base_qty > 0:
+                    spool_ratio = spool_used_raw / base_qty
+                    spool_used_inch_dia = total_inch_dia * spool_ratio
+                else:
+                    spool_used_inch_dia = 0
 
-                # اطلاعات را برای آپدیت گروهی (bulk update) آماده می‌کنیم.
+                # جمع کل
+                total_used_inch_dia = direct_used_inch_dia + spool_used_inch_dia
+                remaining_inch_dia = max(0, total_inch_dia - total_used_inch_dia)
+
                 progress_updates.append({
                     'mto_item_id': mto_item.id,
                     'project_id': project_id,
@@ -408,13 +424,13 @@ class DataManager:
                     'item_code': mto_item.item_code,
                     'description': mto_item.description,
                     'unit': mto_item.unit,
-                    'total_qty': round(total_required or 0, 2),
-                    'used_qty': round(total_used, 2),
-                    'remaining_qty': round(remaining, 2),
+                    'total_qty': round(total_inch_dia, 2),
+                    'used_qty': round(total_used_inch_dia, 2),
+                    'remaining_qty': round(remaining_inch_dia, 2),
                     'last_updated': datetime.now()
                 })
 
-            # گام ۵: تمام رکوردهای قدیمی پیشرفت را حذف کرده و رکوردهای جدید را یک‌جا درج می‌کنیم.
+            # گام 4: حذف و درج
             session.query(MTOProgress).filter(
                 MTOProgress.mto_item_id.in_(mto_item_ids_in_line)
             ).delete(synchronize_session=False)
@@ -423,10 +439,11 @@ class DataManager:
                 session.bulk_insert_mappings(MTOProgress, progress_updates)
 
             session.commit()
+
         except Exception as e:
             session.rollback()
             import traceback
-            logging.error(f"خطا در rebuild_mto_progress_for_line (بهینه شده): {e}\n{traceback.format_exc()}")
+            logging.error(f"خطا در rebuild_mto_progress_for_line: {e}\n{traceback.format_exc()}")
         finally:
             session.close()
 
@@ -592,89 +609,65 @@ class DataManager:
     # --------------------------------------------------------------------
     # متدهای گزارش‌گیری (مربوط به داشبورد و گزارش‌ها)
     # --------------------------------------------------------------------
-    # متدهای get_project_progress, get_line_progress و generate_project_report که قبلاً نوشته‌اید
-    # در اینجا قرار می‌گیرند و کامل هستند.
-    @lru_cache(maxsize=128)
-    def get_project_progress(self, project_id, default_diameter=1):
-        """
-        محاسبه پیشرفت کلی پروژه بر اساس داده‌های دیتابیس
-        - وزن هر خط = (مجموع LENGTH(M) + QUANTITY) × بیشترین قطر پایپ در آن خط
-        - درصد پیشرفت = وزن انجام‌شده / وزن کل × 100
-        """
-        from models import MTOItem, MTOConsumption, MIVRecord
 
+    @lru_cache(maxsize=128)
+    def get_project_progress(self, project_id):
+        """
+        محاسبه پیشرفت کل پروژه (جمع inch_dia تمام خطوط)
+        نسخه بهینه: یک Query به جای Loop
+        """
         session = self.get_session()
         try:
-            # گرفتن تمام شماره خطوط پروژه
-            lines = session.query(MTOItem.line_no).filter(MTOItem.project_id == project_id).distinct().all()
-            if not lines:
-                return {"total_lines": 0, "total_weight": 0, "done_weight": 0, "percentage": 0}
+            # 📊 یک Query برای گرفتن آمار کل پروژه
+            result = session.query(
+                func.count(func.distinct(MTOProgress.line_no)).label('total_lines'),
+                func.sum(MTOProgress.total_qty).label('total_inch_dia'),
+                func.sum(MTOProgress.used_qty).label('done_inch_dia')
+            ).filter(
+                MTOProgress.project_id == project_id
+            ).first()
 
-            total_weight = 0
-            done_weight = 0
+            if not result or result.total_lines == 0:
+                return {
+                    "total_lines": 0,
+                    "total_weight": 0,
+                    "done_weight": 0,
+                    "percentage": 0
+                }
 
-            for (line_no,) in lines:
-                # گرفتن تمام آیتم‌های این خط
-                items = session.query(MTOItem).filter(
-                    MTOItem.project_id == project_id,
-                    MTOItem.line_no == line_no
-                ).all()
+            total_lines = result.total_lines or 0
+            total_inch_dia = result.total_inch_dia or 0
+            done_inch_dia = result.done_inch_dia or 0
 
-                if not items:
-                    continue
-
-                # بیشترین قطر پایپ در این خط (در MTOItem پیکسلی نیست ولی میشه به item_type استناد کرد)
-                max_diameter = default_diameter
-                for item in items:
-                    if item.item_type and "pipe" in item.item_type.lower():
-                        try:
-                            # فرض: طول یا قطر پایپ در description یا unit ذخیره نشده، فعلاً پیش‌فرض می‌زنیم
-                            pass
-                        except:
-                            pass
-
-                # مجموع مقادیر طول و تعداد
-                length_sum = sum(item.length_m or 0 for item in items)
-                qty_sum = sum(item.quantity or 0 for item in items)
-                qty_sum_effective = length_sum + qty_sum
-
-                line_weight = qty_sum_effective * max_diameter
-                total_weight += line_weight
-
-                # محاسبه مصرف‌شده
-                used_qty = (
-                               session.query(func.coalesce(func.sum(MTOConsumption.used_qty), 0))
-                               .join(MTOItem, MTOConsumption.mto_item_id == MTOItem.id)
-                               .filter(MTOItem.project_id == project_id, MTOItem.line_no == line_no)
-                               .scalar()
-                           ) or 0
-
-                done_weight += used_qty * max_diameter
-
-            percentage = round((done_weight / total_weight * 100), 2) if total_weight > 0 else 0
+            percentage = round(
+                (done_inch_dia / total_inch_dia * 100), 2
+            ) if total_inch_dia > 0 else 0
 
             return {
-                "total_lines": len(lines),
-                "total_weight": total_weight,
-                "done_weight": done_weight,
+                "total_lines": total_lines,
+                "total_weight": total_inch_dia,
+                "done_weight": done_inch_dia,
                 "percentage": percentage
             }
 
         except Exception as e:
-            print(f"⚠️ خطا در محاسبه پیشرفت پروژه: {e}")
-            return {"total_lines": 0, "total_weight": 0, "done_weight": 0, "percentage": 0}
+            logging.error(f"⚠️ خطا در محاسبه پیشرفت پروژه {project_id}: {e}")
+            return {
+                "total_lines": 0,
+                "total_weight": 0,
+                "done_weight": 0,
+                "percentage": 0
+            }
         finally:
             session.close()
 
     @lru_cache(maxsize=256)
-    def get_line_progress(self, project_id, line_no, readonly=True):  # 🔹 نیازی به default_diameter نیست
+    def get_line_progress(self, project_id, line_no, readonly=True):
         """
-        محاسبه پیشرفت یک خط خاص در پروژه با استفاده از داده‌های MTOProgress.
+        محاسبه پیشرفت یک خط (بر اساس inch_dia)
         """
         session = self.get_session()
         try:
-            # جمع کل و مصرف شده از رکوردهای MTOProgress
-            # ما فرض می‌کنیم هر آیتم وزن یکسانی دارد. اگر وزن‌دهی پیچیده‌تر نیاز بود، منطق تغییر می‌کند.
             query_result = session.query(
                 func.sum(MTOProgress.total_qty),
                 func.sum(MTOProgress.used_qty)
@@ -683,12 +676,11 @@ class DataManager:
                 MTOProgress.line_no == line_no
             ).first()
 
-            total_weight, done_weight = query_result
-            total_weight = total_weight or 0
-            done_weight = done_weight or 0
+            total_inch_dia, used_inch_dia = query_result
+            total_inch_dia = total_inch_dia or 0
+            used_inch_dia = used_inch_dia or 0
 
-            if total_weight == 0 and not readonly:
-                # اگر خط داده‌ای در MTOProgress نداشت، یک بار آن را بساز
+            if total_inch_dia == 0 and not readonly:
                 self.initialize_mto_progress_for_line(project_id, line_no)
                 query_result = session.query(
                     func.sum(MTOProgress.total_qty),
@@ -697,16 +689,16 @@ class DataManager:
                     MTOProgress.project_id == project_id,
                     MTOProgress.line_no == line_no
                 ).first()
-                total_weight, done_weight = query_result
-                total_weight = total_weight or 0
-                done_weight = done_weight or 0
+                total_inch_dia, used_inch_dia = query_result
+                total_inch_dia = total_inch_dia or 0
+                used_inch_dia = used_inch_dia or 0
 
-            percentage = round((done_weight / total_weight * 100), 2) if total_weight > 0 else 0
+            percentage = round((used_inch_dia / total_inch_dia * 100), 2) if total_inch_dia > 0 else 0
 
             return {
                 "line_no": line_no,
-                "total_weight": total_weight,
-                "done_weight": done_weight,
+                "total_weight": total_inch_dia,  # حالا واحدش inch-dia
+                "done_weight": used_inch_dia,
                 "percentage": percentage
             }
 
@@ -926,17 +918,27 @@ class DataManager:
             ).all()
 
             for item in mto_items:
-                exists = session.query(MTOProgress).filter(MTOProgress.mto_item_id == item.id).first()
-                if not exists:
-                    # --- CHANGE: حذف تبدیل واحد ---
-                    is_pipe = item.item_type and 'pipe' in item.item_type.lower()
-                    if is_pipe:
-                        total_required = item.length_m or 0 # دیگر ضرب در ۱۰۰۰ نداریم
-                    else:
-                        total_required = item.quantity or 0
+                exists = session.query(MTOProgress).filter(
+                    MTOProgress.mto_item_id == item.id
+                ).first()
 
-                    total_used = session.query(func.coalesce(func.sum(MTOConsumption.used_qty), 0.0)) \
-                        .filter(MTOConsumption.mto_item_id == item.id).scalar()
+                if not exists:
+                    # 🆕 total_qty حالا همان inch_dia است
+                    total_qty_inch_dia = item.inch_dia or 0
+
+                    # محاسبه used_qty (بر اساس inch_dia)
+                    total_used = session.query(
+                        func.coalesce(func.sum(MTOConsumption.used_qty), 0.0)
+                    ).filter(MTOConsumption.mto_item_id == item.id).scalar()
+
+                    # تبدیل used_qty به inch_dia
+                    is_pipe = item.item_type and 'pipe' in item.item_type.lower()
+                    base_qty = item.length_m if is_pipe else item.quantity
+
+                    if base_qty and base_qty > 0:
+                        used_qty_inch_dia = total_used * (total_qty_inch_dia / base_qty)
+                    else:
+                        used_qty_inch_dia = 0
 
                     new_progress = MTOProgress(
                         project_id=project_id,
@@ -945,12 +947,13 @@ class DataManager:
                         item_code=item.item_code,
                         description=item.description,
                         unit=item.unit,
-                        total_qty=round(total_required, 2),
-                        used_qty=round(total_used, 2),
-                        remaining_qty=round(max(0, total_required - total_used), 2),
+                        total_qty=round(total_qty_inch_dia, 2),
+                        used_qty=round(used_qty_inch_dia, 2),
+                        remaining_qty=round(max(0, total_qty_inch_dia - used_qty_inch_dia), 2),
                         last_updated=datetime.now()
                     )
                     session.add(new_progress)
+
             session.commit()
         except Exception as e:
             session.rollback()
@@ -1107,75 +1110,25 @@ class DataManager:
             session.close()
 
     # --------------------------------------------------------------------
-    # متدهایی که در API جدید صدا زدیم
-    # --------------------------------------------------------------------
-
-    def get_lines_for_project(self, project_id):
-        """تمام شماره خط‌های متمایز برای یک پروژه را برمی‌گرداند."""
-        session = self.get_session()
-        try:
-            # از جدول MTOItem شماره خطوط را می‌خوانیم
-            lines = session.query(MTOItem.line_no).filter(MTOItem.project_id == project_id).distinct().order_by(
-                MTOItem.line_no).all()
-            # نتیجه کوئری لیستی از tupleهاست، آن را به لیست رشته تبدیل می‌کنیم
-            return [line[0] for line in lines]
-        except Exception as e:
-            logging.error(f"Error fetching lines for project {project_id}: {e}")
-            return []
-        finally:
-            session.close()
-
-    def get_activity_logs(self, limit=100):
-        """آخرین N رکورد از جدول لاگ فعالیت‌ها را برمی‌گرداند."""
-        session = self.get_session()
-        try:
-            return session.query(ActivityLog).order_by(ActivityLog.timestamp.desc()).limit(limit).all()
-        except Exception as e:
-            logging.error(f"Error fetching activity logs: {e}")
-            return []
-        finally:
-            session.close()
-
-    def get_project_analytics(self, project_id):
-        """داده‌های تحلیلی و آماری یک پروژه را برای داشبورد استخراج می‌کند."""
-        session = self.get_session()
-        try:
-            # 1. تحلیل فعالیت کاربران (تعداد MIV ثبت شده توسط هر کاربر)
-            user_activity = session.query(
-                MIVRecord.registered_by,
-                func.count(MIVRecord.id).label('miv_count')
-            ).filter(MIVRecord.project_id == project_id).group_by(MIVRecord.registered_by).order_by(
-                func.count(MIVRecord.id).desc()).all()
-
-            # 2. تحلیل مصرف متریال (پر مصرف‌ترین آیتم‌ها)
-            material_consumption = session.query(
-                MTOItem.description,
-                func.sum(MTOConsumption.used_qty).label('total_used')
-            ).join(MTOConsumption, MTOItem.id == MTOConsumption.mto_item_id) \
-                .filter(MTOItem.project_id == project_id) \
-                .group_by(MTOItem.description).order_by(func.sum(MTOConsumption.used_qty).desc()).limit(10).all()
-
-            # 3. تحلیل وضعیت MIV ها
-            status_distribution = session.query(
-                MIVRecord.status,
-                func.count(MIVRecord.id).label('status_count')
-            ).filter(MIVRecord.project_id == project_id, MIVRecord.status != None) \
-                .group_by(MIVRecord.status).all()
-
-            return {
-                "user_activity": [{"user": user, "count": count} for user, count in user_activity],
-                "material_consumption": [{"material": desc, "total_used": used} for desc, used in material_consumption],
-                "status_distribution": [{"status": status, "count": count} for status, count in status_distribution]
-            }
-        except Exception as e:
-            logging.error(f"Error fetching project analytics for project {project_id}: {e}")
-            return {}
-        finally:
-            session.close()
-
-    # --------------------------------------------------------------------
     # متدهای لازم برای گذارش گیری
     # --------------------------------------------------------------------
+
+    def get_lines_for_project(self, project_id: int) -> List[str]:
+        """
+        لیست شماره خطوط یک پروژه را برمی‌گرداند
+        """
+        session = self.get_session()
+        try:
+            lines = session.query(MTOItem.line_no).filter(
+                MTOItem.project_id == project_id
+            ).distinct().order_by(MTOItem.line_no).all()
+
+            return [line[0] for line in lines]
+        except Exception as e:
+            logging.error(f"Error in get_lines_for_project: {e}")
+            return []
+        finally:
+            session.close()
 
     def get_project_mto_summary(self, project_id: int, **filters) -> Dict[str, Any]:
         """
