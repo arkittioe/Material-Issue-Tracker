@@ -1,6 +1,8 @@
 # file: data_manager.py
 
 import os
+import sys
+
 from sqlalchemy import create_engine, func, desc
 from sqlalchemy.orm import sessionmaker, joinedload
 from functools import lru_cache
@@ -33,6 +35,13 @@ SPOOL_TYPE_MAPPING = {
 
     # ... شما می‌توانید آیتم‌های بیشتری به اینجا اضافه کنید
 }
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 
 class DataManager:
     def __init__(self, db_user: str | None = None, db_password: str | None = None):
@@ -2399,8 +2408,8 @@ class DataManager:
                 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
                 # ثبت فونت فارسی
-                font_path = "Vazirmatn-Regular.ttf"
-                font_name = 'Helvetica'  # فونت پیش‌فرض در صورت نبودن وزیر
+                font_path = resource_path("Vazirmatn-Regular.ttf")  # ✅ اصلاح شده
+                font_name = 'Helvetica'
                 if os.path.exists(font_path):
                     pdfmetrics.registerFont(TTFont('Vazir', font_path))
                     font_name = 'Vazir'

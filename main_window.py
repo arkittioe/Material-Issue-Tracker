@@ -135,8 +135,36 @@ class MainWindow(QMainWindow):
 
         # منوی Help
         help_menu = menu_bar.addMenu("&Help")
-        about_action = help_menu.addAction("&About")
+
+        # اضافه کردن آیکون‌ها برای زیبایی
+        user_guide_action = help_menu.addAction("📖 User Guide")
+        user_guide_action.setShortcut("F1")
+        user_guide_action.triggered.connect(self.show_help_dialog)
+
+        help_menu.addSeparator()
+
+        keyboard_shortcuts_action = help_menu.addAction("⌨️ Keyboard Shortcuts")
+        keyboard_shortcuts_action.triggered.connect(
+            lambda: self.show_help_dialog()  # باز می‌شه روی تب Shortcuts
+        )
+
+        help_menu.addSeparator()
+
+        about_action = help_menu.addAction("ℹ️ About MIV Manager")
         about_action.triggered.connect(self.show_about_dialog)
+
+        check_updates_action = help_menu.addAction("🔄 Check for Updates")
+        check_updates_action.triggered.connect(self._check_for_updates)
+
+    def _check_for_updates(self):
+        """بررسی نسخه جدید (می‌تونید بعداً پیاده‌سازی شود)"""
+        QMessageBox.information(
+            self,
+            "Check for Updates",
+            "You are using the latest version (2.0.0)\n\n"
+            "Visit GitHub for release notes:\n"
+            "https://github.com/arkittioe/Material-Issue-Tracker-SQLDB"
+        )
 
     def setup_ui(self):
         """ساخت و چیدمان UI اصلی"""
@@ -402,21 +430,16 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def show_about_dialog(self):
-        """نمایش پنجره درباره برنامه"""
-        title = "About MIV Management"
-        text = """
-        <h2>Material Issue Tracker</h2>
-        <p><b>Version:</b> 1.0.0</p>
-        <p>This application helps track and manage Material Take-Off (MTO),
-        Material Issue Vouchers (MIV), and Spool Inventory for engineering projects.</p>
-        <hr>
-        <p><b>Developer:</b> Hossein Izadi</p>
-        <p><b>Email:</b> <a href="mailto:arkittoe@gmail.com">arkittoe@gmail.com</a></p>
-        <p><b>GitHub Repository:</b> <a href="https://github.com/arkittioe/Material-Issue-Tracker-SQLDB">Material-Issue-Tracker-SQLDB</a></p>
-        <br>
-        <p><i>Built with Python, PyQt6, and SQLAlchemy.</i></p>
-        """
-        QMessageBox.about(self, title, text)
+        """نمایش پنجره درباره برنامه (نسخه جدید)"""
+        from about_dialog import AboutDialog
+        dialog = AboutDialog(self)
+        dialog.exec()
+
+    def show_help_dialog(self):
+        """نمایش راهنمای استفاده"""
+        from about_dialog import HelpDialog
+        dialog = HelpDialog(self)
+        dialog.exec()
 
     def cleanup_processes(self):
         """پاکسازی و بستن پروسه‌های جانبی"""
